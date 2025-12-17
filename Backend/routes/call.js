@@ -170,47 +170,64 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ---------------- Upload Audio to S3 ----------------
-router.post("/upload", authenticateToken, upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+router.post(
+  "/upload",
+  authenticateToken,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
 
-    const fileName = `${Date.now()}-${req.file.originalname}`;
+      const fileName = `${Date.now()}-${req.file.originalname}`;
+      const s3Path = `audio/${fileName}`;
 
-    // Upload params
-    const uploadParams = {
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: `audio/${fileName}`,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype,
-    };
+      // Upload to S3
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: process.env.S3_BUCKET_NAME,
+          Key: s3Path,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype,
+        })
+      );
 
-    await s3.send(new PutObjectCommand(uploadParams));
+      const fileUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Path}`;
 
-    const fileUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/audio/${fileName}`;
+      // Save metadata to Supabase
+      const { data, error } = await supabase
+        .from("uploads")
+        .insert([
+          {
+            user_id: req.user.id,
+            file_url: fileUrl,
+            filename: req.file.originalname,
+            path: s3Path,
+            mimetype: req.file.mimetype,
+            size: req.file.size,
+            status: "uploaded",
+            uploaded_at: new Date(),
+          },
+        ])
+        .select()
+        .single();
 
-    // Save to Supabase
-    const { data, error } = await supabase
-      .from("uploads")
-      .insert([
-        {
-          user_id: req.user.id,
-          file_url: fileUrl,
-          status: "uploaded",
-        },
-      ])
-      .select()
-      .single();
+      if (error) throw error;
 
-    if (error) throw error;
-
-    res.json({
-      message: "Audio uploaded to S3 successfully",
-      upload: data,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Upload failed", error: err.message });
+      res.json({
+        message: "Audio uploaded to S3 successfully",
+        upload: data,
+      });
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({
+        message: "Upload failed",
+        error: err.message,
+      });
+    }
   }
-});
+);
 
 export default router;
+
